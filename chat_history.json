@@ -1,0 +1,40 @@
+{
+  "cfd1812e-ebbb-416c-b8f8-4407e73b417c": {
+    "title": "hello",
+    "created_at": "2026-09-11T15:17:07.652509",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello"
+      },
+      {
+        "role": "assistant",
+        "content": "Xin chào! Bạn cần hỗ trợ gì về lập trình?"
+      },
+      {
+        "role": "user",
+        "content": "can you help me slove this: 30x+190=932141x-10?"
+      },
+      {
+        "role": "assistant",
+        "content": "**Giải phương trình:**\n\n\\[\n30x + 190 = 932141x - 10\n\\]\n\nChuyển vế:\n\n\\[\n190 + 10 = 932141x - 30x\n\\]\n\n\\[\n200 = 932111x\n\\]\n\n\\[\nx = \\frac{200}{932111}\n\\]\n\nVậy:\n\n\\[\n\\boxed{x = \\frac{200}{932111} \\approx 0.00021457}\n\\]\n\nPhân số này đã tối giản vì \\(200\\) không chia hết cho \\(932111\\)."
+      }
+    ],
+    "summary": null
+  },
+  "892c3727-ff8d-43fb-8c70-41119710d156": {
+    "title": "hello",
+    "created_at": "2026-09-11T15:43:28.452620",
+    "messages": [
+      {
+        "role": "user",
+        "content": "hello"
+      },
+      {
+        "role": "assistant",
+        "content": "Hello! How can I help you today?"
+      }
+    ],
+    "summary": null
+  }
+}
