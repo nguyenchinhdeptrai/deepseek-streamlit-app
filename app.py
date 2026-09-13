@@ -11,6 +11,75 @@ st.set_page_config(page_title="DeepSeek Project Assistant", layout="wide")
 #hiển thị tiêu đề lớn ở trang web
 st.title("🤖 DeepSeek AI - Project Assistant")
 
+# --- CSS: thanh nhập liệu dạng "viên thuốc" (pill) giống Gemini/ChatGPT ---
+# Dùng biến CSS của Streamlit (--background-color, --secondary-background-color, ...)
+# nên màu sắc tự đổi theo theme Light/Dark mà người dùng chọn (kể cả "Use system setting").
+st.markdown(
+    """
+    <style>
+    /* Khoảng đệm dưới cùng để thanh composer không dính sát mép trình duyệt */
+    div[data-testid="stBottomBlockContainer"] {
+        padding-bottom: 1.6rem;
+    }
+
+    /* Khung "viên thuốc" bao quanh toàn bộ composer (nút +, ô nhập, model, mic) */
+    .st-key-composer_bar {
+        background: var(--secondary-background-color);
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: 30px;
+        padding: 6px 12px;
+        margin: 0 auto;
+        max-width: 900px;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+    }
+    .st-key-composer_bar [data-testid="stHorizontalBlock"] {
+        align-items: center;
+        gap: 0.4rem;
+    }
+
+    /* Ô nhập chat: bỏ khung/nền mặc định để hoà vào viên thuốc */
+    .st-key-composer_bar [data-testid="stChatInput"] {
+        background: transparent !important;
+        border: none !important;
+    }
+    .st-key-composer_bar [data-testid="stChatInput"] textarea {
+        background: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
+    .st-key-composer_bar [data-testid="stChatInputSubmitButton"] {
+        background: var(--primary-color) !important;
+        border-radius: 50% !important;
+    }
+
+    /* Dropdown chọn model -> bo tròn thành 1 "chip" nhỏ như nút "Flash" trong ảnh */
+    .st-key-composer_bar div[data-baseweb="select"] > div {
+        background: var(--background-color);
+        border-radius: 20px;
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        min-height: 2.3rem;
+    }
+
+    /* Nút "+" đính kèm file & nút mic (decorative) -> bo tròn thành hình tròn */
+    .st-key-composer_bar div[data-testid="stPopover"] > button,
+    .st-key-composer_bar button[kind="secondary"] {
+        border-radius: 50% !important;
+        width: 2.3rem;
+        height: 2.3rem;
+        padding: 0 !important;
+        border: none !important;
+        background: var(--background-color) !important;
+    }
+    .st-key-composer_bar div[data-testid="stPopover"] > button:hover,
+    .st-key-composer_bar button[kind="secondary"]:hover {
+        background: var(--primary-color) !important;
+        color: white !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # --- 0. Lưu trữ lịch sử chat trên đĩa (giống ChatGPT/Gemini) ---
 # File JSON lưu tất cả các đoạn chat, đặt cạnh app.py để không phụ thuộc vào
 # thư mục làm việc hiện tại (cwd) khi chạy `streamlit run`.
@@ -54,7 +123,13 @@ def make_title(first_message: str) -> str:
     return title or "Đoạn chat mới"
 
 
-api_key = st.secrets.get("DEEPSEEK_API_KEY", os.environ.get("DEEPSEEK_API_KEY"))
+try:
+    # st.secrets sẽ báo lỗi nếu máy không có file secrets.toml nào cả (kể cả khi
+    # dùng biến môi trường) -> bọc try/except để không bị crash trong trường hợp đó.
+    api_key = st.secrets.get("DEEPSEEK_API_KEY")
+except Exception:
+    api_key = None
+api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
 
 if not api_key:
     st.warning("⚠️ Vui lòng nhập DeepSeek API Key trong `secrets.toml` hoặc biến môi trường `DEEPSEEK_API_KEY` để tiếp tục.")
@@ -82,6 +157,22 @@ if "current_conv_id" not in st.session_state:
 current_conv_id = st.session_state.current_conv_id
 current_messages = st.session_state.conversations.get(current_conv_id, {}).get("messages", [])
 
+# --- Quét sẵn danh sách file trong dự án (dùng cho nút "+" đính kèm ở thanh chat) ---
+project_dir = os.getcwd()
+project_files = []
+ignored_dirs = {'.git', 'venv', '__pycache__', 'node_modules', '.vscode'}
+for root, dirs, files in os.walk(project_dir):
+    dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith('.')]
+    for file in files:
+        rel_path = os.path.relpath(os.path.join(root, file), project_dir)
+        project_files.append(rel_path)
+
+# Model đang chọn: widget thực sự nằm ở thanh chat phía dưới (composer_bar), nhưng
+# giá trị được lưu trong session_state ngay từ đầu nên các phần code chạy trước đó
+# (ví dụ nút "Tạo tóm tắt" trong sidebar) vẫn đọc được lựa chọn hiện tại.
+st.session_state.setdefault("model_select", list(MODEL_OPTIONS.keys())[0])
+selected_model = st.session_state["model_select"]
+
 # --- 2. Cấu hình ở Thanh bên (Sidebar) ---
 with st.sidebar:
     # st.header("⚙️ Cấu hình")
@@ -91,12 +182,9 @@ with st.sidebar:
     #biến kiểu boolean để xác định chế độ ẩn danh. Nếu người dùng chọn chế độ ẩn danh, biến is_incognito sẽ được đặt thành True, ngược lại là False. Biến này sẽ được sử dụng để quyết định có lưu lịch sử trò chuyện hay không.
     is_incognito = "Ẩn danh" in mode
 
-    # --- Chọn model AI của DeepSeek ---
-    selected_model = st.selectbox(
-        "🧠 Model DeepSeek:",
-        options=list(MODEL_OPTIONS.keys()),
-        index=0,
-    )
+    # --- Model AI của DeepSeek hiện đang dùng ---
+    # (Lựa chọn model đã được chuyển xuống thanh chat phía dưới, cạnh ô nhập tin nhắn)
+    st.caption(f"🧠 Model đang dùng: **{selected_model}**")
     st.caption(MODEL_OPTIONS[selected_model])
 
     # --- Chế độ suy luận sâu (Thinking mode) ---
@@ -233,23 +321,8 @@ with st.sidebar:
                         st.error(f"Lỗi khi tóm tắt: {e}")
 
     st.divider()
-    st.header("📂 Đọc file Dự án")
-
-    # Lấy đường dẫn thư mục dự án hiện tại
-    project_dir = os.getcwd()
-    st.caption(f"Thư mục hiện tại: `{project_dir}`")
-
-    # Tự động quét các file trong dự án (loại trừ các thư mục rác)
-    project_files = []
-    ignored_dirs = {'.git', 'venv', '__pycache__', 'node_modules', '.vscode'}
-
-    for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith('.')]
-        for file in files:
-            rel_path = os.path.relpath(os.path.join(root, file), project_dir)
-            project_files.append(rel_path)
-
-    selected_file = st.selectbox("Chọn file đính kèm gửi cho AI:", ["(Không chọn file)"] + project_files)
+    st.caption(f"📂 Thư mục dự án: `{project_dir}`")
+    st.caption("Dùng nút ➕ cạnh ô nhập tin nhắn bên dưới để đính kèm file từ dự án.")
 
 # # Kiếm tra API Key
 # if not api_key:
@@ -269,8 +342,47 @@ if not is_incognito:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-# --- 4. Xử lý tin nhắn người dùng ---
-if prompt := st.chat_input("Nhập câu hỏi hoặc yêu cầu..."):
+# --- 4. Thanh composer dạng "viên thuốc": nút + (đính kèm file), ô nhập, model, mic ---
+with st.container(key="composer_bar"):
+    col_attach, col_input, col_model, col_mic = st.columns(
+        [0.7, 6, 1.8, 0.7], vertical_alignment="center"
+    )
+
+    with col_attach:
+        with st.popover("➕", use_container_width=True, help="Đính kèm file từ dự án"):
+            st.caption(f"📂 `{project_dir}`")
+            st.selectbox(
+                "Chọn file đính kèm gửi cho AI:",
+                ["(Không chọn file)"] + project_files,
+                key="selected_file",
+                label_visibility="collapsed",
+            )
+
+    with col_input:
+        prompt = st.chat_input("Nhập câu hỏi hoặc yêu cầu...")
+
+    with col_model:
+        st.selectbox(
+            "Model",
+            options=list(MODEL_OPTIONS.keys()),
+            key="model_select",
+            label_visibility="collapsed",
+        )
+
+    with col_mic:
+        st.button(
+            "🎤",
+            use_container_width=True,
+            disabled=True,
+            help="Nhập bằng giọng nói (sắp ra mắt)",
+        )
+
+selected_file = st.session_state.get("selected_file", "(Không chọn file)")
+if selected_file != "(Không chọn file)":
+    st.caption(f"📎 Đã chọn đính kèm: `{selected_file}`")
+
+# --- 5. Xử lý tin nhắn người dùng ---
+if prompt:
     context_prompt = prompt
     file_attached = False
 
