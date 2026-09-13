@@ -8,8 +8,19 @@ from openai import OpenAI
 
 #cấu hình trang web streamlit
 st.set_page_config(page_title="DeepSeek Project Assistant", layout="wide")
-#hiển thị tiêu đề lớn ở trang web
-st.title("🤖 DeepSeek AI - Project Assistant")
+
+#hiển thị tiêu đề lớn ở trang web + công tắc "Chế độ ẩn danh" ở góc trên bên phải
+header_left, header_right = st.columns([4.6, 1.2], vertical_alignment="center")
+with header_left:
+    st.title("🤖 DeepSeek AI - Project Assistant")
+with header_right:
+    is_incognito = st.toggle(
+        "🕵️ Ẩn danh",
+        key="incognito_mode",
+        help="Bật để trò chuyện ở chế độ ẩn danh: không lưu lịch sử đoạn chat này.",
+    )
+if is_incognito:
+    st.caption("🕵️ Đang ở chế độ ẩn danh — đoạn chat này sẽ không được lưu lại.")
 
 # --- CSS: thanh nhập liệu dạng "viên thuốc" (pill) giống Gemini/ChatGPT ---
 # Dùng biến CSS của Streamlit (--background-color, --secondary-background-color, ...)
@@ -52,17 +63,9 @@ st.markdown(
         border-radius: 50% !important;
     }
 
-    /* Dropdown chọn model -> bo tròn thành 1 "chip" nhỏ như nút "Flash" trong ảnh */
-    .st-key-composer_bar div[data-baseweb="select"] > div {
-        background: var(--background-color);
-        border-radius: 20px;
-        border: 1px solid rgba(128, 128, 128, 0.25);
-        min-height: 2.3rem;
-    }
-
-    /* Nút "+" đính kèm file & nút mic (decorative) -> bo tròn thành hình tròn */
-    .st-key-composer_bar div[data-testid="stPopover"] > button,
-    .st-key-composer_bar button[kind="secondary"] {
+    /* Nút "+" đính kèm file (mở popover upload) & nút mic (decorative) -> hình tròn */
+    .st-key-attach_popover div[data-testid="stPopover"] > button,
+    .st-key-mic_btn button {
         border-radius: 50% !important;
         width: 2.3rem;
         height: 2.3rem;
@@ -70,10 +73,29 @@ st.markdown(
         border: none !important;
         background: var(--background-color) !important;
     }
-    .st-key-composer_bar div[data-testid="stPopover"] > button:hover,
-    .st-key-composer_bar button[kind="secondary"]:hover {
+    .st-key-attach_popover div[data-testid="stPopover"] > button:hover,
+    .st-key-mic_btn button:hover {
         background: var(--primary-color) !important;
         color: white !important;
+    }
+
+    /* Nút mở popover Model + Chế độ suy luận -> bo tròn thành 1 "chip" như ảnh mẫu */
+    .st-key-model_popover div[data-testid="stPopover"] > button {
+        background: var(--background-color);
+        border-radius: 20px !important;
+        border: 1px solid rgba(128, 128, 128, 0.25) !important;
+        min-height: 2.3rem;
+        padding: 0.2rem 1rem !important;
+        white-space: nowrap;
+    }
+    .st-key-model_popover div[data-testid="stPopover"] > button:hover {
+        border-color: var(--primary-color) !important;
+        color: var(--primary-color) !important;
+    }
+
+    /* Popover đính kèm file: rộng rãi hơn mặc định để chứa khu vực kéo-thả file */
+    div[data-testid="stPopoverBody"] {
+        min-width: 260px;
     }
     </style>
     """,
@@ -157,63 +179,40 @@ if "current_conv_id" not in st.session_state:
 current_conv_id = st.session_state.current_conv_id
 current_messages = st.session_state.conversations.get(current_conv_id, {}).get("messages", [])
 
-# --- Quét sẵn danh sách file trong dự án (dùng cho nút "+" đính kèm ở thanh chat) ---
-project_dir = os.getcwd()
-project_files = []
-ignored_dirs = {'.git', 'venv', '__pycache__', 'node_modules', '.vscode'}
-for root, dirs, files in os.walk(project_dir):
-    dirs[:] = [d for d in dirs if d not in ignored_dirs and not d.startswith('.')]
-    for file in files:
-        rel_path = os.path.relpath(os.path.join(root, file), project_dir)
-        project_files.append(rel_path)
-
-# Model đang chọn: widget thực sự nằm ở thanh chat phía dưới (composer_bar), nhưng
-# giá trị được lưu trong session_state ngay từ đầu nên các phần code chạy trước đó
-# (ví dụ nút "Tạo tóm tắt" trong sidebar) vẫn đọc được lựa chọn hiện tại.
+# Model & chế độ suy luận: các widget thực sự nằm trong popover ở thanh chat phía
+# dưới (composer_bar), nhưng giá trị được lưu trong session_state ngay từ đầu nên
+# các phần code chạy trước đó (ví dụ nút "Tạo tóm tắt" trong sidebar) vẫn đọc được
+# lựa chọn hiện tại.
 st.session_state.setdefault("model_select", list(MODEL_OPTIONS.keys())[0])
+st.session_state.setdefault("thinking_choice", "⚙️ Mặc định")
+st.session_state.setdefault("reasoning_effort", "high")
 selected_model = st.session_state["model_select"]
+
+
+def build_extra_body():
+    """Tạo tham số extra_body để bật/tắt/điều chỉnh thinking mode."""
+    choice = st.session_state.get("thinking_choice", "⚙️ Mặc định")
+    if choice == "🧠 Bật suy luận sâu":
+        body = {"thinking": {"type": "enabled"}}
+        effort = st.session_state.get("reasoning_effort")
+        if effort:
+            body["reasoning_effort"] = effort
+        return body
+    elif choice == "⚡ Tắt (trả lời nhanh)":
+        return {"thinking": {"type": "disabled"}}
+    return {}
+
 
 # --- 2. Cấu hình ở Thanh bên (Sidebar) ---
 with st.sidebar:
     # st.header("⚙️ Cấu hình")
     # api_key = st.text_input("Nhập DeepSeek API Key:", type="password")
 
-    mode = st.radio("Chế độ Chat:", ["Thường (Lưu lịch sử)", "Ẩn danh (Không nhớ lịch sử)"])
-    #biến kiểu boolean để xác định chế độ ẩn danh. Nếu người dùng chọn chế độ ẩn danh, biến is_incognito sẽ được đặt thành True, ngược lại là False. Biến này sẽ được sử dụng để quyết định có lưu lịch sử trò chuyện hay không.
-    is_incognito = "Ẩn danh" in mode
-
     # --- Model AI của DeepSeek hiện đang dùng ---
-    # (Lựa chọn model đã được chuyển xuống thanh chat phía dưới, cạnh ô nhập tin nhắn)
+    # (Lựa chọn model + chế độ suy luận đã được chuyển xuống thanh chat phía dưới,
+    # bấm vào chip cạnh ô nhập tin nhắn để đổi)
     st.caption(f"🧠 Model đang dùng: **{selected_model}**")
     st.caption(MODEL_OPTIONS[selected_model])
-
-    # --- Chế độ suy luận sâu (Thinking mode) ---
-    # deepseek-flash / deepseek-v4-pro mặc định đã bật thinking mode, nhưng
-    # người dùng có thể chủ động bật/tắt hoặc chỉnh mức độ suy luận.
-    thinking_choice = st.radio(
-        "Chế độ suy luận:",
-        ["⚙️ Mặc định", "🧠 Bật suy luận sâu", "⚡ Tắt (trả lời nhanh)"],
-        index=0,
-    )
-
-    reasoning_effort = None
-    if thinking_choice == "🧠 Bật suy luận sâu":
-        reasoning_effort = st.select_slider(
-            "Mức độ suy luận:",
-            options=["low", "medium", "high"],
-            value="high",
-        )
-
-    def build_extra_body():
-        """Tạo tham số extra_body để bật/tắt/điều chỉnh thinking mode."""
-        if thinking_choice == "🧠 Bật suy luận sâu":
-            body = {"thinking": {"type": "enabled"}}
-            if reasoning_effort:
-                body["reasoning_effort"] = reasoning_effort
-            return body
-        elif thinking_choice == "⚡ Tắt (trả lời nhanh)":
-            return {"thinking": {"type": "disabled"}}
-        return {}
 
     st.divider()
 
@@ -320,10 +319,6 @@ with st.sidebar:
                     except Exception as e:
                         st.error(f"Lỗi khi tóm tắt: {e}")
 
-    st.divider()
-    st.caption(f"📂 Thư mục dự án: `{project_dir}`")
-    st.caption("Dùng nút ➕ cạnh ô nhập tin nhắn bên dưới để đính kèm file từ dự án.")
-
 # # Kiếm tra API Key
 # if not api_key:
 #     st.warning("⚠️ Vui lòng nhập API Key ở thanh bên phải để tiếp tục.")
@@ -345,61 +340,84 @@ if not is_incognito:
 # --- 4. Thanh composer dạng "viên thuốc": nút + (đính kèm file), ô nhập, model, mic ---
 with st.container(key="composer_bar"):
     col_attach, col_input, col_model, col_mic = st.columns(
-        [0.7, 6, 1.8, 0.7], vertical_alignment="center"
+        [0.7, 6, 2.2, 0.7], vertical_alignment="center"
     )
 
     with col_attach:
-        with st.popover("➕", use_container_width=True, help="Đính kèm file từ dự án"):
-            st.caption(f"📂 `{project_dir}`")
-            st.selectbox(
-                "Chọn file đính kèm gửi cho AI:",
-                ["(Không chọn file)"] + project_files,
-                key="selected_file",
-                label_visibility="collapsed",
-            )
+        with st.container(key="attach_popover"):
+            with st.popover("➕", use_container_width=True, help="Đính kèm file từ máy tính của bạn"):
+                st.caption("📎 Đính kèm file từ máy tính của bạn")
+                st.file_uploader(
+                    "Chọn file đính kèm gửi cho AI:",
+                    key="uploaded_file",
+                    label_visibility="collapsed",
+                )
 
     with col_input:
         prompt = st.chat_input("Nhập câu hỏi hoặc yêu cầu...")
 
     with col_model:
-        st.selectbox(
-            "Model",
-            options=list(MODEL_OPTIONS.keys()),
-            key="model_select",
-            label_visibility="collapsed",
-        )
+        with st.container(key="model_popover"):
+            with st.popover(f"🧠 {selected_model}", use_container_width=True, help="Chọn model & chế độ suy luận"):
+                st.selectbox(
+                    "Model DeepSeek:",
+                    options=list(MODEL_OPTIONS.keys()),
+                    key="model_select",
+                )
+                st.caption(MODEL_OPTIONS[st.session_state["model_select"]])
+
+                st.divider()
+
+                # --- Chế độ suy luận sâu (Thinking mode), tích hợp ngay dưới model ---
+                st.radio(
+                    "Chế độ suy luận:",
+                    ["⚙️ Mặc định", "🧠 Bật suy luận sâu", "⚡ Tắt (trả lời nhanh)"],
+                    key="thinking_choice",
+                )
+                if st.session_state["thinking_choice"] == "🧠 Bật suy luận sâu":
+                    st.select_slider(
+                        "Mức độ suy luận:",
+                        options=["low", "medium", "high"],
+                        value=st.session_state.get("reasoning_effort", "high"),
+                        key="reasoning_effort",
+                    )
 
     with col_mic:
-        st.button(
-            "🎤",
-            use_container_width=True,
-            disabled=True,
-            help="Nhập bằng giọng nói (sắp ra mắt)",
-        )
+        with st.container(key="mic_btn"):
+            st.button(
+                "🎤",
+                use_container_width=True,
+                disabled=True,
+                help="Nhập bằng giọng nói (sắp ra mắt)",
+            )
 
-selected_file = st.session_state.get("selected_file", "(Không chọn file)")
-if selected_file != "(Không chọn file)":
-    st.caption(f"📎 Đã chọn đính kèm: `{selected_file}`")
+uploaded_file = st.session_state.get("uploaded_file")
+if uploaded_file is not None:
+    st.caption(f"📎 Đã đính kèm: `{uploaded_file.name}`")
 
 # --- 5. Xử lý tin nhắn người dùng ---
 if prompt:
     context_prompt = prompt
     file_attached = False
 
-    # Đọc nội dung file nếu người dùng chọn
-    if selected_file != "(Không chọn file)":
+    # Đọc nội dung file người dùng vừa tải lên từ máy tính của họ (nếu có)
+    if uploaded_file is not None:
         try:
-            with open(selected_file, "r", encoding="utf-8") as f:
-                file_content = f.read()
-            context_prompt = f"Dưới đây là nội dung file `{selected_file}` trong dự án của tôi:\n```\n{file_content}\n```\n\nYêu cầu từ tôi: {prompt}"
+            file_content = uploaded_file.getvalue().decode("utf-8")
+            context_prompt = f"Dưới đây là nội dung file `{uploaded_file.name}` tôi đính kèm:\n```\n{file_content}\n```\n\nYêu cầu từ tôi: {prompt}"
             file_attached = True
+        except UnicodeDecodeError:
+            st.warning(
+                f"Không thể đọc nội dung file `{uploaded_file.name}` (có thể không phải file văn bản). "
+                "Tin nhắn sẽ được gửi mà không kèm nội dung file."
+            )
         except Exception as e:
             st.error(f"Không thể đọc file: {e}")
 
     # Hiển thị câu hỏi lên màn hình
     with st.chat_message("user"):
         if file_attached:
-            st.info(f"📄 **Đã đính kèm file:** `{selected_file}`")
+            st.info(f"📄 **Đã đính kèm file:** `{uploaded_file.name}`")
         st.markdown(prompt)
 
     # Chuẩn bị dữ liệu gửi lên API DeepSeek
